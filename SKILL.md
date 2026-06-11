@@ -64,18 +64,32 @@ Step 6  注入 Zotero field codes (根据 citation-format 适配)
 | user_id | — | `0`（本地 Zotero） | 静默使用默认 |
 | csl_style | ✅ | `physics-in-medicine-and-biology` | 用户未指定则使用默认 |
 
-#### 1b. 文件预检
-确认文件存在且格式正确：
+#### 1b. 环境预检
+
+**文件检查** — 确认存在且格式正确：
 
 ```bash
 # 检查文件存在
 ls -la MD_FILE BIB_FILE
 # 统计 MD 引用数
-grep -c '\\[@' MD_FILE
+grep -c '\[@' MD_FILE
 # 统计 BIB 条目数
 grep -c '^@' BIB_FILE
 # 检查 CSL 并显示 citation-format
 python3 -c "import xml.etree.ElementTree as ET; ..."
+```
+
+**Zotero 连通性检查** — 必须在 Step 2 之前完成：
+
+```bash
+# 1) Zotero 桌面是否运行（本地 API，只读）
+curl -s http://localhost:23119/api/users/0/collections | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'本地API: ✅ {len(d)} collections')" \
+  || echo '本地API: ❌ Zotero 未运行'
+
+# 2) Zotero Web API 是否可用（读写，Step 3 必需）
+curl -s -H "Zotero-API-Key: $ZOTERO_API_KEY" "https://api.zotero.org/users/$ZOTERO_USER_ID/collections?limit=1" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Web API: ✅ user={d[0][\"library\"][\"name\"]}')" \
+  || echo 'Web API: ❌ 未配置 ZOTERO_API_KEY / ZOTERO_USER_ID'
 ```
 
 打印摘要：
@@ -83,7 +97,14 @@ python3 -c "import xml.etree.ElementTree as ET; ..."
   MD: 118 行, 50 个唯一引用
   BIB: 58 个条目 (26% DOI 覆盖率)
   CSL: author-date (IOP Harvard)
+  Zotero 本地API: ✅ (读取)
+  Zotero Web API: ✅ (读写, Step 3-4 必需)
 ```
+
+**Web API 不可用时**：
+- Step 3（创建 Collection + 导入）和 Step 4（构建映射）需要 Web API 写权限
+- 本地 API 只能读取，不能创建 Collection 或导入条目
+- 缺少 `ZOTERO_API_KEY` 或 `ZOTERO_USER_ID` → **暂停，提示配置后再继续**
 
 #### 1c. 汇总确认
 展示以上全部信息。**必填项（md_file、bib_file）无缺项时，自动进入 Step 2**，无需等用户回复。仅有必填项缺失时才暂停询问。
