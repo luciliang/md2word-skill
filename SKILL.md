@@ -85,8 +85,8 @@ python3 -c "import xml.etree.ElementTree as ET; ..."
   CSL: author-date (IOP Harvard)
 ```
 
-#### 1c. 用户确认
-展示以上全部信息后，**显式询问**用户是否确认，得到肯定答复后才进入 Step 2。
+#### 1c. 汇总确认
+展示以上全部信息。**必填项（md_file、bib_file）无缺项时，自动进入 Step 2**，无需等用户回复。仅有必填项缺失时才暂停询问。
 
 ---
 
