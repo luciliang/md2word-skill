@@ -30,7 +30,7 @@ description: "从 MD+BIB 生成 Zotero 管理的 Word 文档。将 Markdown pand
 - user_id:    Zotero user ID（默认：3313474）
 ```
 
-### Step 2: 检查依赖
+### Step 2: 检查依赖与编码预检
 
 运行以下命令确认环境就绪：
 ```bash
@@ -41,6 +41,27 @@ pandoc --version | head -1
 ```
 
 如果 Zotero 未运行，提示用户先启动 Zotero 后重试。
+
+**编码预检**（在进入 Step 3 之前执行）：
+```bash
+file -I BIB_FILE  # 检测实际编码
+file -I MD_FILE
+```
+如果 BIB 文件编码不是 UTF-8，先转码：
+```bash
+iconv -f GBK -t UTF-8 ORIGINAL.bib > /tmp/converted.bib
+# 后续步骤使用 /tmp/converted.bib 代替原始文件
+```
+记录转码路径，后续所有步骤使用转码后的文件。
+
+**DOI 覆盖率预检**：
+```bash
+grep -ci 'doi' BIB_FILE  # 粗略统计含 DOI 的条目数
+grep -c '^@' BIB_FILE    # 总条目数
+```
+如果 DOI 覆盖率低于 50%，**警告用户**：「当前 BIB 文件仅 XX% 的条目有 DOI，大部分引用将依赖标题模糊匹配，准确率可能下降。建议在 Zotero 中让插件自动补全 DOI。」
+
+**暂停等用户确认**（如果编码需要转码或 DOI 覆盖率 < 50%）。
 
 ### Step 3: 导入 BIB → Zotero（如不存在）
 
@@ -77,24 +98,6 @@ for item in items:
 
 从 BIB 文件和 MD 文件构建 `pandoc编号 → Zotero item key` 映射。这一步是整个流程的关键——pandoc 按首次出现顺序编号，脚本需要知道每个编号对应哪个 Zotero 条目。
 
-1. 解析 BIB 文件，获取每个 cite_key 的 DOI 和 title：
-```python
-import re
-def parse_bib(bib_path):
-    """解析 BIB 文件，返回 {cite_key: {doi, title}}"""
-    with open(bib_path, encoding='utf-8') as f:
-        content = f.read()
-    entries = {}
-    for match in re.finditer(r'@\w+\{(\w+),\s*\n(.*?)\n\}', content, re.DOTALL):
-        key = match.group(1)
-        body = match.group(2)
-        doi_m = re.search(r'doi\s*=\s*[{"](.*?)[}"]', body, re.I)
-        title_m = re.search(r'title\s*=\s*[{"](.*?)[}"]', body, re.I)
-        entries[key] = {
-            'doi': doi_m.group(1).lower().strip() if doi_m else None,
-            'title': title_m.group(1).lower().strip() if title_m else None,
-        }
-    return entries
 ```
 2. 匹配逻辑（优先级）：
    - **DOI 精确匹配**：`bib_doi.lower() == zotero_doi.lower()`（最可靠）
@@ -152,6 +155,27 @@ else:
 
 ### Step 6: 注入 Zotero field codes
 
+1. 解析 BIB 文件，获取每个 cite_key 的 DOI 和 title。
+   **BIB 文件必须是标准 BibTeX 格式**，使用 `bibtexparser` 库解析：
+```bash
+pip install bibtexparser
+```
+```python
+import bibtexparser
+
+def parse_bib(bib_path):
+    """解析标准 BibTeX 文件，返回 {cite_key: {doi, title}}"""
+    with open(bib_path, encoding='utf-8') as f:
+        db = bibtexparser.load(f)
+    entries = {}
+    for entry in db.entries:
+        entries[entry['ID']] = {
+            'doi': entry.get('doi', '').strip() or None,
+            'title': entry.get('title', '').strip() or None,
+        }
+    return entries
+```
+> **为什么用 bibtexparser**：BibTeX 是固定格式标准，`bibtexparser` 是 Python 生态的标准解析库，正确处理嵌套花括号、多行字段、字符串拼接等 BibTeX 语法，不需要手写正则。
 运行参数化脚本：
 ```bash
 python3 ~/.claude/skills/md2word-skill/scripts/inject_zotero.py \
