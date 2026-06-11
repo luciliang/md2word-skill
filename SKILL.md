@@ -16,6 +16,8 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 
 > **输出约定**：所有中间文件和最终输出默认保存到 md 与 bib 文件所在同一目录（下文记为 `OUTDIR`），除非用户指定其他路径。最终文件名：`<md文件名>_zotero.docx`。
 
+> **执行约定**：每一步必须**单独运行**并在终端打印该步骤的进度和结果后再进入下一步。禁止将多步合并为一条命令静默执行。每步执行前用 `echo` 或 `print` 显示当前步骤编号和目标。
+
 ```
 Step 1  收集参数 (md_file, bib_file, collection, csl_style)
 Step 2  依赖检查 + 交叉验证 + 双来源文献核查

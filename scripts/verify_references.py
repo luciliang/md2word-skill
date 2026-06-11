@@ -48,16 +48,24 @@ def extract_md_keys(md_path):
 
 def cross_validate(md_path, bib_path):
     """MD ↔ BIB 交叉验证"""
+    print(f'  解析 MD 引用: {md_path}', flush=True)
     md_keys = extract_md_keys(md_path)
+    print(f'  找到 {len(md_keys)} 个唯一引用', flush=True)
+
+    print(f'  加载 BIB: {bib_path}', flush=True)
     bib_entries = load_bib(bib_path)
     bib_keys = set(bib_entries.keys())
+    print(f'  找到 {len(bib_entries)} 个条目', flush=True)
 
+    print('  比对中 ...', flush=True)
     missing_in_bib = sorted(set(md_keys.keys()) - bib_keys)
     unused_in_md = sorted(bib_keys - set(md_keys.keys()))
     matched = set(md_keys.keys()) & bib_keys
 
     no_doi = sorted(k for k in matched if not bib_entries[k].get('doi'))
     no_title = sorted(k for k in matched if not bib_entries[k].get('title'))
+
+    print(f'  ✅ 匹配 {len(matched)} | ❌ BIB缺失 {len(missing_in_bib)} | ⚠ MD未引用 {len(unused_in_md)}', flush=True)
 
     result = {
         'md_total': len(md_keys),
@@ -160,6 +168,9 @@ def normalize(text):
 
 def dual_verify(bib_entries, s2_script=None):
     """双来源文献真实性核查 (S2 + CrossRef)"""
+    results = {}
+    total = len(bib_entries)
+    print(f'  核查 {total} 条文献 (S2 + CrossRef 双源) ...', flush=True)
     results = {}
     total = len(bib_entries)
 
