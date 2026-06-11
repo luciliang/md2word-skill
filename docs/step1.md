@@ -33,6 +33,8 @@
 | user_id | — | `0`（本地 Zotero） | 静默使用默认 |
 | csl_style | ✅ | `physics-in-medicine-and-biology` | 用户未指定则使用默认 |
 
+> **CSL 文件路径**：默认 CSL 文件在 skill 目录的 `styles/physics-in-medicine-and-biology.csl`。resolved 路径 = `~/.claude/skills/md2word-skill/styles/physics-in-medicine-and-biology.csl`。它是 dependent style，parent 是同目录的 `institute-of-physics-harvard.csl`，pandoc 会自动解析。
+
 ## 1b. 环境预检
 
 **文件检查** — 确认存在且格式正确：

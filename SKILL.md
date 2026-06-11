@@ -11,6 +11,7 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 - **BibTeX 文件**：包含所有引用的参考文献（每条最好有 DOI）
 - **Zotero 桌面版**：正在运行（pyzotero 需要本地 API）
 - **依赖**：pandoc 2.11+（`--citeproc`）、pyzotero、python-docx、lxml、bibtexparser
+- **内置 CSL 样式**：`styles/` 目录下已有 `physics-in-medicine-and-biology.csl`（dependent）和 `institute-of-physics-harvard.csl`（parent）。默认使用前者，用户指定其他样式时需提供路径或 URL。
 
 ## 工作流程
 
