@@ -102,7 +102,9 @@ for item in items:
 2. 匹配逻辑（优先级）：
    - **DOI 精确匹配**：`bib_doi.lower() == zotero_doi.lower()`（最可靠）
    - **标题模糊匹配**：去除标点和空格后比较，`re.sub(r'[^\w]', '', bib_title) == re.sub(r'[^\w]', '', zotero_title)`（fallback）
-3. 输出未匹配的 cite_key 列表，让用户确认
+3. **检查点**：输出未匹配的 cite_key 列表。
+   - 如果未匹配数 > 0：**暂停，展示未匹配列表，等用户决定**（手动指定 / 忽略 / 中止）
+   - 如果全部匹配：继续
 4. 解析 MD 中 `[@citekey]` 的出现顺序，确定 cite_key → pandoc_number
 5. 合并：`pandoc_number → Zotero item key`
 
@@ -116,6 +118,8 @@ pandoc INPUT.md \
   --bibliography=REFERENCES.bib \
   -o /tmp/pandoc_output.docx
 ```
+
+**检查点**：如果 pandoc 报错或输出文件为空，**暂停展示错误信息，等用户决定**（修复源文件 / 换 CSL 样式 / 中止）。
 
 pandoc 的 `--citeproc` 会将 `[@citekey]` 转为编号引用。根据 pandoc 版本和 CSL 样式，引用格式可能是上标（`^1,2^`）或方括号（`[1]`）。
 
