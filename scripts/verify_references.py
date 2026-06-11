@@ -166,66 +166,75 @@ def normalize(text):
     return re.sub(r'[^\w]', '', text).lower() if text else ''
 
 
+def _verify_one(item):
+    """验证单条文献，供 ThreadPoolExecutor 调用。"""
+    cite_key, entry, s2_script = item
+    doi = entry.get('doi')
+    title = entry.get('title')
+
+    s2 = query_s2(s2_script, doi=doi, title=title) if s2_script else None
+    cr = query_crossref(doi=doi, title=title)
+
+    s2_ok = s2 is not None
+    cr_ok = cr is not None
+    issues = []
+
+    if s2_ok:
+        if normalize(s2.get('title', '')) != normalize(title or ''):
+            issues.append('S2 title mismatch')
+        s2_year = str(s2.get('year', ''))
+        if entry.get('year') and s2_year and s2_year != 'None' and s2_year != entry['year']:
+            issues.append(f'S2 year={s2_year} vs BIB={entry["year"]}')
+    if cr_ok:
+        if normalize(cr.get('title', '')) != normalize(title or ''):
+            issues.append('CR title mismatch')
+        cr_year = cr.get('year')
+        if entry.get('year') and cr_year and cr_year != 'None' and cr_year != entry['year']:
+            issues.append(f'CR year={cr_year} vs BIB={entry["year"]}')
+
+    if not s2_ok and not cr_ok:
+        status = 'SKIP'
+    elif not s2_ok or not cr_ok:
+        missing = 'S2' if not s2_ok else 'CR'
+        status = 'FAIL'
+        issues.append(f'{missing} 未找到')
+    elif issues:
+        status = 'WARN'
+    else:
+        status = 'PASS'
+
+    return cite_key, {
+        'status': status,
+        'issues': issues,
+        's2_found': s2_ok,
+        'cr_found': cr_ok,
+    }
+
+
 def dual_verify(bib_entries, s2_script=None):
-    """双来源文献真实性核查 (S2 + CrossRef)"""
+    """双来源文献真实性核查 (S2 + CrossRef)，并发执行。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    items = [(k, v, s2_script) for k, v in bib_entries.items()]
+    total = len(items)
+    print(f'  核查 {total} 条文献 (S2 + CrossRef 双源, 并发) ...', flush=True)
+
     results = {}
-    total = len(bib_entries)
-    print(f'  核查 {total} 条文献 (S2 + CrossRef 双源) ...', flush=True)
-    results = {}
-    total = len(bib_entries)
-
-    for i, (cite_key, entry) in enumerate(bib_entries.items()):
-        doi = entry.get('doi')
-        title = entry.get('title')
-
-        # 来源1: Semantic Scholar
-        s2 = query_s2(s2_script, doi=doi, title=title) if s2_script else None
-
-        # 来源2: CrossRef
-        cr = query_crossref(doi=doi, title=title)
-
-        # 限速
-        time.sleep(1)
-
-        s2_ok = s2 is not None
-        cr_ok = cr is not None
-        issues = []
-
-        # 核对信息一致性
-        if s2_ok:
-            if normalize(s2.get('title', '')) != normalize(title or ''):
-                issues.append(f"S2 title mismatch")
-            s2_year = str(s2.get('year', ''))
-            if entry.get('year') and s2_year and s2_year != 'None' and s2_year != entry['year']:
-                issues.append(f"S2 year={s2_year} vs BIB={entry['year']}")
-        if cr_ok:
-            if normalize(cr.get('title', '')) != normalize(title or ''):
-                issues.append(f"CR title mismatch")
-            cr_year = cr.get('year')
-            if entry.get('year') and cr_year and cr_year != 'None' and cr_year != entry['year']:
-                issues.append(f"CR year={cr_year} vs BIB={entry['year']}")
-
-        # 判定
-        if not s2_ok and not cr_ok:
-            status = 'SKIP'
-        elif not s2_ok or not cr_ok:
-            missing = 'S2' if not s2_ok else 'CR'
-            status = 'FAIL'
-            issues.append(f"{missing} 未找到")
-        elif issues:
-            status = 'WARN'
-        else:
-            status = 'PASS'
-
-        results[cite_key] = {
-            'status': status,
-            'issues': issues,
-            's2_found': s2_ok,
-            'cr_found': cr_ok,
-        }
-
-        # 进度
-        print(f'  [{i+1}/{total}] {cite_key}: {status}', flush=True)
+    done = 0
+    # 8 线程并发：S2 和 CR 各自的请求可并行，总体吞吐 ~8x
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_verify_one, item): item[0] for item in items}
+        for future in as_completed(futures):
+            cite_key = futures[future]
+            try:
+                ck, result = future.result()
+                results[ck] = result
+                done += 1
+                print(f'  [{done}/{total}] {ck}: {result["status"]}', flush=True)
+            except Exception as e:
+                done += 1
+                results[cite_key] = {'status': 'SKIP', 'issues': [str(e)], 's2_found': False, 'cr_found': False}
+                print(f'  [{done}/{total}] {cite_key}: ERROR ({e})', flush=True)
 
     return results
 
