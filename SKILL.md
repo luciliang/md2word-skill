@@ -14,6 +14,8 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 
 ## 工作流程
 
+> **输出约定**：所有中间文件和最终输出默认保存到 md 与 bib 文件所在同一目录（下文记为 `OUTDIR`），除非用户指定其他路径。最终文件名：`<md文件名>_zotero.docx`。
+
 ```
 Step 1  收集参数 (md_file, bib_file, collection, csl_style)
 Step 2  依赖检查 + 交叉验证 + 双来源文献核查
@@ -35,7 +37,7 @@ Step 6  注入 Zotero field codes (根据 citation-format 适配)
 | md_file | ✅ | — |
 | bib_file | ✅ | — |
 | collection | — | BIB 文件名去掉扩展名 |
-| output | — | `<md文件名>_zotero.docx` |
+| output | — | 与 md 文件同目录，`<md文件名>_zotero.docx` |
 | user_id | — | `0`（本地 Zotero） |
 | csl_style | — | `physics-in-medicine-and-biology` |
 
@@ -76,7 +78,7 @@ python3 scripts/verify_references.py MD_FILE BIB_FILE
 python3 scripts/verify_references.py MD_FILE BIB_FILE --verify
 
 # 输出 JSON 供后续步骤使用
-python3 scripts/verify_references.py MD_FILE BIB_FILE --verify --json /tmp/verify_result.json
+python3 scripts/verify_references.py MD_FILE BIB_FILE --verify --json OUTDIR/verify_result.json
 ```
 
 **脚本流程**（`verify_references.py`）：
@@ -129,14 +131,14 @@ cite_key → (doi, title) from BIB → match against collection items → Zotero
 
 **检查点**：未匹配列表 > 0 时暂停，等用户决定（手动指定 / 忽略 / 中止）。
 
-保存映射到 `/tmp/citation_mapping.json`，格式：`{"1": "J8K6WXE8", ...}`
+保存映射到 `OUTDIR/citation_mapping.json`，格式：`{"cite_key": "ZOTERO_ITEM_KEY", ...}`
 
 ---
 
 ### Step 5: pandoc MD → Word
 
 ```bash
-pandoc INPUT.md --citeproc --bibliography=REFERENCES.bib --csl=CSL_PATH -o /tmp/pandoc_output.docx
+pandoc INPUT.md --citeproc --bibliography=REFERENCES.bib --csl=CSL_PATH -o OUTDIR/pandoc_output.docx
 ```
 
 `CSL_PATH` 由 Step 1 的 `resolve_csl()` 返回。
@@ -165,8 +167,8 @@ pandoc 后自动检测 CSL 的 `citation-format`（解析 XML 中 `<category cit
 
 执行注入：
 ```bash
-python3 scripts/inject_zotero.py --input /tmp/pandoc_output.docx --output FINAL.docx \
-  --mapping /tmp/citation_mapping.json --user-id USER_ID --format <citation-format>
+python3 scripts/inject_zotero.py --input OUTDIR/pandoc_output.docx --output OUTDIR/FINAL_zotero.docx \
+  --mapping OUTDIR/citation_mapping.json --csl CSL_PATH --user-id USER_ID
 ```
 
 脚本同时：删除静态 References 节，插入 `ADDIN ZOTERO_BIBLIOGRAPH` 占位符。
