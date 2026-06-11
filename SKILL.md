@@ -36,7 +36,7 @@ Step 6  注入 Zotero field codes (根据 citation-format 适配)
 | bib_file | ✅ | — |
 | collection | — | BIB 文件名去掉扩展名 |
 | output | — | `<md文件名>_zotero.docx` |
-| user_id | — | 3313474 |
+| user_id | — | `0`（本地 Zotero） |
 | csl_style | — | `physics-in-medicine-and-biology` |
 
 **CSL 样式解析**（`resolve_csl()`）：
