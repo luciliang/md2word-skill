@@ -16,15 +16,15 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 ## 工作流程（6 步）
 
 ```
-Step 1  收集参数 (md_file, bib_file, collection)
+Step 1  收集参数 (md_file, bib_file, collection, csl_style)
 Step 2a 检查依赖 (Zotero, pandoc)
 Step 2b MD↔BIB 交叉验证 (内部一致性)
 Step 2c 双来源文献真实性核查 (S2 + CrossRef)
     ↓
 Step 3  创建 Zotero Collection + 导入已验证文献
 Step 4  构建 cite_key → Zotero item key 映射
-Step 5  pandoc MD → Word
-Step 6  注入 Zotero CSL_CITATION field codes
+Step 5  pandoc MD → Word (使用指定 CSL 样式)
+Step 6  注入 Zotero field codes (根据 CSL 格式自动适配)
 ```
 
 ### Step 1: 收集参数
@@ -40,6 +40,51 @@ Step 6  注入 Zotero CSL_CITATION field codes
 - collection: Zotero collection 名称（默认：BIB 文件名去掉扩展名）
 - output:     输出 Word 文件路径（默认：<md文件名>_zotero.docx）
 - user_id:    Zotero user ID（默认：3313474）
+- csl_style:  CSL 样式名称或路径（默认：physics-in-medicine-and-biology）
+```
+
+**CSL 样式解析**：
+- 如果用户指定了样式名（如 `physics-in-medicine-and-biology`），先检查 `styles/` 目录下是否有对应 `.csl` 文件
+- 如果是 dependent 样式（只含元数据），自动查找其父样式使用
+- 如果用户指定了完整路径，直接使用
+- 如果用户未指定，默认使用 `physics-in-medicine-and-biology`
+
+```python
+import os, re
+
+def resolve_csl(style_name_or_path):
+    styles_dir = os.path.expanduser('~/.claude/skills/md2word-skill/styles')
+    
+    # 用户给了完整路径
+    if os.path.isfile(style_name_or_path):
+        return style_name_or_path
+    
+    # 查找 styles/ 目录
+    csl_path = os.path.join(styles_dir, f'{style_name_or_path}.csl')
+    if not os.path.isfile(csl_path):
+        raise FileNotFoundError(f'CSL not found: {csl_path}')
+    
+    # 检查是否为 dependent 样式（含 independent-parent 链接）
+    with open(csl_path) as f:
+        content = f.read()
+    parent_match = re.search(r'rel="independent-parent"', content)
+    
+    if parent_match:
+        # dependent 样式：找父样式
+        parent_id = re.search(r'href="http://www.zotero.org/styles/([^"]+)"\s+rel="independent-parent"', content)
+        if parent_id:
+            parent_name = parent_id.group(1)
+            parent_path = os.path.join(styles_dir, f'{parent_name}.csl')
+            if os.path.isfile(parent_path):
+                return parent_path
+            else:
+                raise FileNotFoundError(
+                    f'Dependent style "{style_name_or_path}" requires parent "{parent_name}.csl". '
+                    f'Download it first:\n'
+                    f'curl -sL https://raw.githubusercontent.com/citation-style-language/styles/master/{parent_name}.csl '
+                    f'-o {parent_path}')
+    
+    return csl_path
 ```
 
 ### Step 2: 依赖检查 + 交叉验证
@@ -417,61 +462,63 @@ def build_mapping(md_path, bib_path, collection_key):
 
 ### Step 5: pandoc MD → Word
 
-**必须指定著者-出版年 CSL 样式**，确保文内引用为 `(Author, Year)` 格式：
+**使用 Step 1 中解析的 CSL 样式文件**：
 ```bash
 pandoc INPUT.md \
   --citeproc \
   --bibliography=REFERENCES.bib \
-  --csl=~/.claude/skills/md2word-skill/styles/apa-7th-edition.csl \
+  --csl=CSL_PATH \
   -o /tmp/pandoc_output.docx
 ```
 
-**CSL 样式选择**（默认 APA 7th）：
-- `apa-7th-edition.csl` → `(Kendall & Gal, 2017)` — 社科/综合
-- `elsevier-harvard.csl` → `(Kendall and Gal, 2017)` — 理工期刊
-- `chicago-author-date-17th-edition.csl` → `(Kendall and Gal 2017)` — 人文
+`CSL_PATH` 由 `resolve_csl(csl_style)` 返回，已处理 dependent → parent 解析。
 
-如果用户未指定，默认 APA 7th。首次运行时自动从 Zotero CSL 仓库下载到 `styles/` 目录：
+**当前已安装的 CSL 样式**（`styles/` 目录）：
+
+| 文件 | 格式类型 | 适用场景 |
+|------|---------|----------|
+| `physics-in-medicine-and-biology.csl` | author-date (dependent) | PMB 期刊，依赖 IOP Harvard |
+| `institute-of-physics-harvard.csl` | author-date | IOP 系列期刊父样式 |
+
+添加新样式：
 ```bash
-mkdir -p ~/.claude/skills/md2word-skill/styles
-curl -sL https://www.zotero.org/styles/apa-7th-edition \
-  -o ~/.claude/skills/md2word-skill/styles/apa-7th-edition.csl
+# 从 Zotero CSL 仓库下载
+curl -sL https://raw.githubusercontent.com/citation-style-language/styles/master/<style-name>.csl \
+  -o ~/.claude/skills/md2word-skill/styles/<style-name>.csl
 ```
 
 **检查点**：如果 pandoc 报错或输出文件为空，**暂停展示错误信息，等用户决定**。
 
-pandoc 输出后，验证文内引用格式是否为著者-出版年：
+pandoc 输出后，自动检测 CSL 的 citation-format 并记录，供 Step 6 使用：
 ```python
-from docx import Document
-import re
+import xml.etree.ElementTree as ET
 
-def detect_citation_format(docx_path):
-    doc = Document(docx_path)
-    text = ' '.join(p.text for p in doc.paragraphs)
-    
-    author_year = len(re.findall(r'\([A-Z][a-z]+[^)]*\d{4}[^)]*\)', text))
-    superscript = len(re.findall(r'\^\d+', text))  # 上标标记
-    bracket_num = len(re.findall(r'\[\d+(,\d+)*\]', text))
-    
-    if author_year > bracket_num and author_year > superscript:
-        return 'author_year'  # ✅ 著者-出版年
-    elif superscript > bracket_num:
-        return 'superscript'  # 上标编号
-    elif bracket_num > 0:
-        return 'bracket'      # 方括号编号
-    else:
-        return 'unknown'
+def get_csl_format(csl_path):
+    """从 CSL 文件读取 citation-format 类型"""
+    tree = ET.parse(csl_path)
+    root = tree.getroot()
+    ns = {'csl': 'http://purl.org/net/xbiblio/csl'}
+    for cat in root.findall('.//csl:category', ns):
+        fmt = cat.get('citation-format')
+        if fmt:
+            return fmt  # 'author-date', 'numeric', 'label', 'note'
+    return 'author-date'  # 默认
 ```
 
+将检测到的格式类型传递给 Step 6，决定注入策略。
 ### Step 6: 注入 Zotero field codes
 
-著者-出版年格式下，pandoc 输出的文内引用是文本如 `(Kendall & Gal, 2017)`，
-不是编号。注入逻辑与数字格式完全不同：
+**根据 Step 5 检测到的 citation-format 自动选择注入策略**：
+
+| citation-format | pandoc 输出 | 注入方式 |
+|-----------------|------------|----------|
+| `author-date` | `(Kendall and Gal 2017)` | 匹配 Author+Year 文本 → 替换为 field code |
+| `numeric` | `[1]` 或上标 `¹` | 匹配编号文本 → 替换为 field code |
+| `note` | 脚注引用 | 匹配脚注标记 → 替换为 field code |
 
 **6a. 解析 pandoc 输出的引用文本**：
 
-pandoc `--citeproc` 会将 `[@key1; @key2]` 渲染为 `(Author1, Year1; Author2, Year2)`。
-需要从 Word 文档中提取这些文本块，反查回 cite_key：
+以 `author-date` 为例（PMB / IOP Harvard 格式）：
 
 ```python
 def extract_author_year_citations(docx_path, bib_path):
@@ -495,13 +542,14 @@ def extract_author_year_citations(docx_path, bib_path):
         bib_lookup[entry['ID']] = {
             'authors': authors,
             'year': year,
-            'display': f"{', '.join(authors[:2])}{' et al.' if len(authors) > 2 else ''}, {year}"
+            'display': f"{', '.join(authors[:2])}{' et al' if len(authors) > 2 else ''}, {year}"
         }
     
     # 在 Word 中查找引用块
-    # pandoc 输出的著者-出版年引用格式：
-    #   (Kendall & Gal, 2017) 或 Kendall and Gal (2017)
-    #   (Author1, 2020; Author2, 2021) — 多引用
+    # IOP Harvard 格式：
+    #   (Harman et al 2008)  ← 括号引用，无逗号
+    #   Harman et al (2008)   ← 叙述引用
+    #   (Author1 2020; Author2 2021) — 多引用
     citations = []
     for para in doc.paragraphs:
         # 括号引用: (...)
@@ -536,8 +584,8 @@ python3 ~/.claude/skills/md2word-skill/scripts/inject_zotero.py \
   --format author-year
 ```
 
-`--format author-year` 参数告诉脚本使用著者-出版年匹配模式（而非编号模式）。
-脚本将文本引用 `(Author, Year)` 替换为 Zotero 原生的 `ADDIN CSL_CITATION` field code，
+`--format` 参数由 Step 5 检测到的 `citation-format` 决定（`author-year` / `numeric` / `note`）。
+脚本将文本引用替换为 Zotero 原生的 `ADDIN CSL_CITATION` field code，
 删除静态 References 节，插入 `ADDIN ZOTERO_BIBLIOGRAPH` 占位符。
 
 **用户确认点**：脚本运行后，展示替换统计（多少引用被替换、多少警告），确认数量是否合理。
@@ -558,10 +606,7 @@ with zipfile.ZipFile('OUTPUT.docx') as z:
 ```
 
 最终在 Word 中打开输出文件，Zotero 插件应自动识别 field codes 并管理引用。
-文内引用显示为 `(Author, Year)` 格式，参考文献列表由 Zotero 自动生成。
-
-最终在 Word 中打开输出文件，Zotero 插件应自动识别 field codes 并管理引用。
-
+文内引用格式由 CSL 样式决定（PMB 为 author-date），参考文献列表由 Zotero 自动生成。
 ## 注意事项
 
 - **不要覆盖**现有文件，输出总是写到新路径
@@ -569,6 +614,7 @@ with zipfile.ZipFile('OUTPUT.docx') as z:
 - 如果 BIB 中有条目在 Zotero 中找不到匹配，**暂停并报告**未匹配列表
 - pandoc 版本需支持 `--citeproc`（pandoc 2.11+）
 - 如果用户已有 Word 文件（不需要从 MD 转换），只需执行 Step 4（构建映射）和 Step 6（注入），跳过 pandoc
+- CSL 样式文件是工作流的核心——它决定了文内引用格式、参考文献列表格式，以及 Step 6 的注入策略
 
 ## 边界条件与异常处理
 
@@ -579,6 +625,6 @@ with zipfile.ZipFile('OUTPUT.docx') as z:
 | Zotero collection 为空 | 提示用户先导入，暂停等待 |
 | 同一 cite_key 在 BIB 中重复 | 取最后一条，并在未匹配报告中标注 |
 | BIB 条目无 DOI 也无 title | 无法匹配，列入未匹配报告让用户手动指定 |
-| pandoc 输出方括号 `[1]` 而非上标 | 见 Step 5 的格式检测逻辑 |
-| Word 文件中没有找到上标引用 | 检查格式，可能需要调整检测逻辑 |
+| CSL 是 dependent 样式 | 自动查找父样式，找不到则报错并给出下载命令 |
+| 用户指定的 CSL 不存在 | 列出 styles/ 目录下已有样式，提示用户选择或下载 |
 | Zotero item key 映射不完整 | 脚本会跳过未映射的引用并输出警告 |
