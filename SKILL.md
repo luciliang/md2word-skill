@@ -30,30 +30,63 @@ Step 6  注入 Zotero field codes (根据 citation-format 适配)
 
 ---
 
-### Step 1: 收集参数
+### Step 1: 收集参数 & 确认
 
-向用户确认（未提供则用默认值）：
+**必须逐项确认，不能跳过。** 分三个阶段：
 
-| 参数 | 必需 | 默认值 |
-|------|------|--------|
-| md_file | ✅ | — |
-| bib_file | ✅ | — |
-| collection | — | BIB 文件名去掉扩展名 |
-| output | — | 与 md 文件同目录，`<md文件名>_zotero.docx` |
-| user_id | — | `0`（本地 Zotero） |
-| csl_style | — | `physics-in-medicine-and-biology` |
+#### 1a. 收集 & 展示
+从用户指令中提取参数，未提供的填默认值，然后**打印参数汇总表**：
 
-**CSL 样式解析**（`resolve_csl()`）：
-1. 完整路径 → 直接使用
-2. 样式名 → 查 `styles/` 目录下 `.csl` 文件
-3. dependent 样式（含 `independent-parent` 链接）→ 自动使用父样式
-4. 找不到 → 报错并给出 `curl` 下载命令
-
-已安装样式见 `styles/` 目录，添加新样式：
-```bash
-curl -sL https://raw.githubusercontent.com/citation-style-language/styles/master/<name>.csl \
-  -o ~/.claude/skills/md2word-skill/styles/<name>.csl
+```text
+═══════════════════════════════════════
+  md2word 参数确认
+═══════════════════════════════════════
+  MD 文件:        /path/to/paper.md
+  BIB 文件:       /path/to/references.bib
+  CSL 样式:       physics-in-medicine-and-biology
+                   → citation-format: author-date
+  Zotero 用户 ID: 0 (本地)
+  Collection:     references
+  输出文件:       /path/to/paper_zotero.docx
+  ─────────────────────────────────────
+  OUTDIR:         /path/to/
+═══════════════════════════════════════
 ```
+
+必填项缺失时**必须暂停询问**，不能用默认值代替：
+
+| 参数 | 必需 | 默认值 | 缺失时 |
+|------|------|--------|--------|
+| md_file | ✅ | — | **暂停，询问文件路径** |
+| bib_file | ✅ | — | **暂停，询问文件路径** |
+| collection | — | BIB 文件名去掉扩展名 | 静默使用默认 |
+| output | — | `OUTDIR/<md文件名>_zotero.docx` | 静默使用默认 |
+| user_id | — | `0`（本地 Zotero） | 静默使用默认 |
+| csl_style | — | `physics-in-medicine-and-biology` | 静默使用默认 |
+
+#### 1b. 文件预检
+确认文件存在且格式正确：
+
+```bash
+# 检查文件存在
+ls -la MD_FILE BIB_FILE
+# 统计 MD 引用数
+grep -c '\\[@' MD_FILE
+# 统计 BIB 条目数
+grep -c '^@' BIB_FILE
+# 检查 CSL 并显示 citation-format
+python3 -c "import xml.etree.ElementTree as ET; ..."
+```
+
+打印摘要：
+```text
+  MD: 118 行, 50 个唯一引用
+  BIB: 58 个条目 (26% DOI 覆盖率)
+  CSL: author-date (IOP Harvard)
+```
+
+#### 1c. 用户确认
+展示以上全部信息后，**显式询问**用户是否确认，得到肯定答复后才进入 Step 2。
 
 ---
 
