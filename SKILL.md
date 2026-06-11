@@ -417,86 +417,130 @@ def build_mapping(md_path, bib_path, collection_key):
 
 ### Step 5: pandoc MD → Word
 
+**必须指定著者-出版年 CSL 样式**，确保文内引用为 `(Author, Year)` 格式：
 ```bash
 pandoc INPUT.md \
   --citeproc \
   --bibliography=REFERENCES.bib \
+  --csl=~/.claude/skills/md2word-skill/styles/apa-7th-edition.csl \
   -o /tmp/pandoc_output.docx
 ```
 
-**检查点**：如果 pandoc 报错或输出文件为空，**暂停展示错误信息，等用户决定**（修复源文件 / 换 CSL 样式 / 中止）。
+**CSL 样式选择**（默认 APA 7th）：
+- `apa-7th-edition.csl` → `(Kendall & Gal, 2017)` — 社科/综合
+- `elsevier-harvard.csl` → `(Kendall and Gal, 2017)` — 理工期刊
+- `chicago-author-date-17th-edition.csl` → `(Kendall and Gal 2017)` — 人文
 
-pandoc 的 `--citeproc` 会将 `[@citekey]` 转为编号引用。根据 pandoc 版本和 CSL 样式，引用格式可能是上标（`^1,2^`）或方括号（`[1]`）。
-
-**引用格式检测**（在 Step 6 之前执行）：
-
-pandoc 输出的引用格式取决于 CSL 样式。运行脚本前先检测实际格式：
+如果用户未指定，默认 APA 7th。首次运行时自动从 Zotero CSL 仓库下载到 `styles/` 目录：
 ```bash
-python3 -c "
-from docx import Document
-doc = Document('/tmp/pandoc_output.docx')
-import re
-from docx.oxml.ns import qn
-superscript = 0
-bracket = 0
-for p in doc.paragraphs:
-    for r in p.runs:
-        rPr = r._element.find(qn('w:rPr'))
-        if rPr is not None and rPr.find(qn('w:vertAlign')) is not None:
-            if rPr.find(qn('w:vertAlign')).get(qn('w:val')) == 'superscript':
-                if re.match(r'^\d+(,\d+)*$', r.text.strip()):
-                    superscript += 1
-        if re.match(r'^\[\d+(,\d+)*\]$', r.text.strip()):
-            bracket += 1
-print(f'superscript_citations={superscript}, bracket_citations={bracket}')
-if bracket > 0 and superscript == 0:
-    print('FORMAT: bracket')
-elif superscript > 0:
-    print('FORMAT: superscript')
-else:
-    print('FORMAT: unknown')
-"
+mkdir -p ~/.claude/skills/md2word-skill/styles
+curl -sL https://www.zotero.org/styles/apa-7th-edition \
+  -o ~/.claude/skills/md2word-skill/styles/apa-7th-edition.csl
 ```
 
-- **上标格式** → 直接运行 inject_zotero.py
-- **方括号格式** → 需要修改脚本的 `is_superscript_citation_run` 函数为检测方括号模式（`\[\d+(,\d+)*\]`），或在 pandoc 命令中添加 `--csl` 指定上标 CSL 样式重新生成
-- **未知格式** → 提示用户检查 MD 文件中的引用标记是否正确
+**检查点**：如果 pandoc 报错或输出文件为空，**暂停展示错误信息，等用户决定**。
+
+pandoc 输出后，验证文内引用格式是否为著者-出版年：
+```python
+from docx import Document
+import re
+
+def detect_citation_format(docx_path):
+    doc = Document(docx_path)
+    text = ' '.join(p.text for p in doc.paragraphs)
+    
+    author_year = len(re.findall(r'\([A-Z][a-z]+[^)]*\d{4}[^)]*\)', text))
+    superscript = len(re.findall(r'\^\d+', text))  # 上标标记
+    bracket_num = len(re.findall(r'\[\d+(,\d+)*\]', text))
+    
+    if author_year > bracket_num and author_year > superscript:
+        return 'author_year'  # ✅ 著者-出版年
+    elif superscript > bracket_num:
+        return 'superscript'  # 上标编号
+    elif bracket_num > 0:
+        return 'bracket'      # 方括号编号
+    else:
+        return 'unknown'
+```
 
 ### Step 6: 注入 Zotero field codes
 
-1. 解析 BIB 文件，获取每个 cite_key 的 DOI 和 title。
-   **BIB 文件必须是标准 BibTeX 格式**，使用 `bibtexparser` 库解析：
-```bash
-pip install bibtexparser
-```
-```python
-import bibtexparser
+著者-出版年格式下，pandoc 输出的文内引用是文本如 `(Kendall & Gal, 2017)`，
+不是编号。注入逻辑与数字格式完全不同：
 
-def parse_bib(bib_path):
-    """解析标准 BibTeX 文件，返回 {cite_key: {doi, title}}"""
+**6a. 解析 pandoc 输出的引用文本**：
+
+pandoc `--citeproc` 会将 `[@key1; @key2]` 渲染为 `(Author1, Year1; Author2, Year2)`。
+需要从 Word 文档中提取这些文本块，反查回 cite_key：
+
+```python
+def extract_author_year_citations(docx_path, bib_path):
+    """从 Word 中提取著者-出版年引用，匹配回 cite_key"""
+    import bibtexparser, re
+    from docx import Document
+
+    doc = Document(docx_path)
+    
+    # 构建 cite_key → (authors_str, year) 的查找表
     with open(bib_path, encoding='utf-8') as f:
         db = bibtexparser.load(f)
-    entries = {}
+    
+    bib_lookup = {}
     for entry in db.entries:
-        entries[entry['ID']] = {
-            'doi': entry.get('doi', '').strip() or None,
-            'title': entry.get('title', '').strip() or None,
+        year = entry.get('year', '')
+        authors = []
+        for a in entry.get('author', '').split(' and '):
+            parts = a.strip().split(',')
+            authors.append(parts[0].strip())  # 取姓氏
+        bib_lookup[entry['ID']] = {
+            'authors': authors,
+            'year': year,
+            'display': f"{', '.join(authors[:2])}{' et al.' if len(authors) > 2 else ''}, {year}"
         }
-    return entries
+    
+    # 在 Word 中查找引用块
+    # pandoc 输出的著者-出版年引用格式：
+    #   (Kendall & Gal, 2017) 或 Kendall and Gal (2017)
+    #   (Author1, 2020; Author2, 2021) — 多引用
+    citations = []
+    for para in doc.paragraphs:
+        # 括号引用: (...)
+        for m in re.finditer(r'\(([^)]+\d{4}[^)]*)\)', para.text):
+            citations.append(m.group(1))
+        # 叙述引用: Author (Year)
+        for m in re.finditer(r'([A-Z][a-zA-Z\s&]+?)\s*\((\d{4})\)', para.text):
+            citations.append(f"{m.group(1)}, {m.group(2)}")
+    
+    # 匹配回 cite_key
+    matched = {}
+    for cite_text in citations:
+        for ck, info in bib_lookup.items():
+            # 检查引用文本是否包含该条目的作者+年份
+            for author in info['authors']:
+                if author in cite_text and info['year'] in cite_text:
+                    matched[cite_text] = ck
+                    break
+    
+    return matched
 ```
-> **为什么用 bibtexparser**：BibTeX 是固定格式标准，`bibtexparser` 是 Python 生态的标准解析库，正确处理嵌套花括号、多行字段、字符串拼接等 BibTeX 语法，不需要手写正则。
-运行参数化脚本：
+
+**6b. 注入 Zotero CSL_CITATION field codes**：
+
+对每个匹配到的引用，用 Zotero item key 构建 `ADDIN CSL_CITATION` field code：
 ```bash
 python3 ~/.claude/skills/md2word-skill/scripts/inject_zotero.py \
   --input /tmp/pandoc_output.docx \
   --output FINAL_OUTPUT.docx \
   --mapping /tmp/citation_mapping.json \
-  --user-id ZOTERO_USER_ID
+  --user-id ZOTERO_USER_ID \
+  --format author-year
 ```
 
-脚本将上标的纯文本引用编号替换为 Zotero 原生的 `ADDIN CSL_CITATION` field code（5 个 XML 元素：begin → instrText → separate → display → end），删除静态 References 节，插入 `ADDIN ZOTERO_BIBLIOGRAPH` 占位符。这样 Zotero Word 插件就能识别并管理所有引用。
+`--format author-year` 参数告诉脚本使用著者-出版年匹配模式（而非编号模式）。
+脚本将文本引用 `(Author, Year)` 替换为 Zotero 原生的 `ADDIN CSL_CITATION` field code，
+删除静态 References 节，插入 `ADDIN ZOTERO_BIBLIOGRAPH` 占位符。
 
-**用户确认点**：脚本运行后，展示替换统计（多少引用被替换、多少警告），确认数量是否合理。如果替换数量与预期不符，检查映射文件后再决定是否继续。
+**用户确认点**：脚本运行后，展示替换统计（多少引用被替换、多少警告），确认数量是否合理。
 
 ### 验证
 
@@ -512,6 +556,9 @@ with zipfile.ZipFile('OUTPUT.docx') as z:
     print(f'✓ {len(bibs)} bibliography placeholder')
 "
 ```
+
+最终在 Word 中打开输出文件，Zotero 插件应自动识别 field codes 并管理引用。
+文内引用显示为 `(Author, Year)` 格式，参考文献列表由 Zotero 自动生成。
 
 最终在 Word 中打开输出文件，Zotero 插件应自动识别 field codes 并管理引用。
 
