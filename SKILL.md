@@ -1,6 +1,6 @@
 ---
 name: md2word-skill
-description: "从 MD+BIB 生成 Zotero 管理的 Word 文档。将 Markdown pandoc 引用转为 Zotero ADDIN CSL_CITATION field codes，实现真正的参考文献管理。Use when user types /md2word, or mentions converting markdown or pandoc to Word with Zotero, inserting Zotero references into Word, managing citations from a BibTeX file, or academic paper formatting with reference management. Also trigger when user asks about md-to-word, md转word, zotero field codes, 参考文献管理, 论文格式, or any workflow involving markdown papers + Zotero + Word output."
+description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pandoc 引用 [@key] 转为 Zotero CSL_CITATION field codes。触发词: /md2word, md转word, markdown转word, zotero field codes, 参考文献管理, 论文格式化, BibTeX to Word, pandoc to Word, Zotero citation injection."
 ---
 
 # /md2word: MD + BIB → Zotero-managed Word
