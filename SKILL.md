@@ -101,10 +101,10 @@ curl -s -H "Zotero-API-Key: $ZOTERO_API_KEY" "https://api.zotero.org/users/$ZOTE
   Zotero Web API: ✅ (读写, Step 3-4 必需)
 ```
 
-**Web API 不可用时**：
-- Step 3（创建 Collection + 导入）和 Step 4（构建映射）需要 Web API 写权限
-- 本地 API 只能读取，不能创建 Collection 或导入条目
-- 缺少 `ZOTERO_API_KEY` 或 `ZOTERO_USER_ID` → **暂停，提示配置后再继续**
+- 缺少 `ZOTERO_API_KEY` 或 `ZOTERO_USER_ID` 时 → **提示用户手动操作**：
+  1. 在 Zotero 中创建 Collection「COLLECTION_NAME」
+  2. 通过 Zotero「导入」功能将 BIB 文件导入该 Collection
+  3. 等待用户确认「已完成导入」后才继续 Step 2
 
 #### 1c. 汇总确认
 展示以上全部信息。**必填项（md_file、bib_file）无缺项时，自动进入 Step 2**，无需等用户回复。仅有必填项缺失时才暂停询问。
