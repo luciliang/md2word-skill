@@ -102,9 +102,10 @@ curl -s -H "Zotero-API-Key: $ZOTERO_API_KEY" "https://api.zotero.org/users/$ZOTE
 ```
 
 - 缺少 `ZOTERO_API_KEY` 或 `ZOTERO_USER_ID` 时 → **提示用户手动操作**：
-  1. 在 Zotero 中创建 Collection「COLLECTION_NAME」
-  2. 通过 Zotero「导入」功能将 BIB 文件导入该 Collection
-  3. 等待用户确认「已完成导入」后才继续 Step 2
+  1. 与用户确认 Collection 名称（默认取 BIB 文件名去掉扩展名）
+  2. 用户在 Zotero 中创建该 Collection
+  3. 通过 Zotero「导入」功能将 BIB 文件导入该 Collection
+  4. 等待用户确认「已完成导入」后才继续 Step 2
 
 #### 1c. 汇总确认
 展示以上全部信息。**必填项（md_file、bib_file）无缺项时，自动进入 Step 2**，无需等用户回复。仅有必填项缺失时才暂停询问。
