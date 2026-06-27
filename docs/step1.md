@@ -1,83 +1,83 @@
-# Step 1: 收集参数 & 确认
+# Step 1: Collect parameters & confirm
 
-**必须逐项确认，不能跳过。** 分三个阶段：
+**Confirm each item one by one — do not skip.** Three phases:
 
-## 1a. 收集 & 展示
+## 1a. Collect & display
 
-从用户指令中提取参数，未提供的填默认值，然后**打印参数汇总表**：
+Extract parameters from the user's command; fill defaults for any not provided, then **print a parameter summary table**:
 
 ```text
 ═══════════════════════════════════════
-  md2word 参数确认
+  md2word parameter confirmation
 ═══════════════════════════════════════
-  MD 文件:        /path/to/paper.md
-  BIB 文件:       /path/to/references.bib
-  CSL 样式:       physics-in-medicine-and-biology
-                   → citation-format: author-date
-  Zotero 用户 ID: 0 (本地)
+  MD file:        /path/to/paper.md
+  BIB file:       /path/to/references.bib
+  CSL style:      physics-in-medicine-and-biology
+                  → citation-format: author-date
+  Zotero User ID: 0 (local)
   Collection:     references
-  输出文件:       /path/to/paper_zotero.docx
+  Output file:    /path/to/paper_zotero.docx
   ─────────────────────────────────────
   OUTDIR:         /path/to/
 ═══════════════════════════════════════
 ```
 
-必填项缺失时**必须暂停询问**，不能用默认值代替：
+When a required field is missing you **must pause and ask** — do not substitute a default:
 
-| 参数 | 必需 | 默认值 | 缺失时 |
-|------|------|--------|--------|
-| md_file | ✅ | — | **暂停，询问文件路径** |
-| bib_file | ✅ | — | **暂停，询问文件路径** |
-| collection | — | BIB 文件名去掉扩展名 | 静默使用默认 |
-| output | — | `OUTDIR/<md文件名>_zotero.docx` | 静默使用默认 |
-| user_id | — | `0`（本地 Zotero） | 静默使用默认 |
-| csl_style | ✅ | `physics-in-medicine-and-biology` | 用户未指定则使用默认 |
+| Parameter | Required | Default | If missing |
+|-----------|----------|---------|------------|
+| md_file | ✅ | — | **pause, ask for the file path** |
+| bib_file | ✅ | — | **pause, ask for the file path** |
+| collection | — | BIB filename without extension | use default silently |
+| output | — | `OUTDIR/<md_filename>_zotero.docx` | use default silently |
+| user_id | — | `0` (local Zotero) | use default silently |
+| csl_style | ✅ | `physics-in-medicine-and-biology` | use default if the user does not specify |
 
-> **CSL 文件路径**：默认 CSL 文件在本 skill 的 `styles/physics-in-medicine-and-biology.csl`。它是 dependent style，parent 是同目录的 `institute-of-physics-harvard.csl`，pandoc 会自动解析。路径相对于本 skill 目录。
+> **CSL file path**: the default CSL lives at this skill's `styles/physics-in-medicine-and-biology.csl`. It is a dependent style; the parent is `institute-of-physics-harvard.csl` in the same directory, which pandoc resolves automatically. The path is relative to the skill directory.
 
-## 1b. 环境预检
+## 1b. Environment pre-check
 
-**文件检查** — 确认存在且格式正确：
+**File checks** — confirm they exist and are in the correct format:
 
 ```bash
-# 检查文件存在
+# check files exist
 ls -la MD_FILE BIB_FILE
-# 统计 MD 引用数
+# count MD citations
 grep -c '\[@' MD_FILE
-# 统计 BIB 条目数
+# count BIB entries
 grep -c '^@' BIB_FILE
-# 检查 CSL 并显示 citation-format
+# inspect CSL and show its citation-format
 python3 -c "import xml.etree.ElementTree as ET; ..."
 ```
 
-**Zotero 连通性检查** — 必须在 Step 2 之前完成：
+**Zotero connectivity check** — must pass before Step 2:
 
 ```bash
-# 1) Zotero 桌面是否运行（本地 API，只读）
-curl -s http://localhost:23119/api/users/0/collections | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'本地API: ✅ {len(d)} collections')" \
-  || echo '本地API: ❌ Zotero 未运行'
+# 1) Is Zotero desktop running? (Local API, read-only)
+curl -s http://localhost:23119/api/users/0/collections | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Local API: ✅ {len(d)} collections')" \
+  || echo 'Local API: ❌ Zotero not running'
 
-# 2) Zotero Web API 是否可用（读写，Step 3 必需）
+# 2) Is the Zotero Web API available? (read & write, required by Step 3)
 curl -s -H "Zotero-API-Key: $ZOTERO_API_KEY" "https://api.zotero.org/users/$ZOTERO_USER_ID/collections?limit=1" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Web API: ✅ user={d[0][\"library\"][\"name\"]}')" \
-  || echo 'Web API: ❌ 未配置 ZOTERO_API_KEY / ZOTERO_USER_ID'
+  || echo 'Web API: ❌ ZOTERO_API_KEY / ZOTERO_USER_ID not configured'
 ```
 
-打印摘要：
+Print a summary:
 ```text
-  MD: 118 行, 50 个唯一引用
-  BIB: 58 个条目 (26% DOI 覆盖率)
+  MD: 118 lines, 50 unique citations
+  BIB: 58 entries (26% DOI coverage)
   CSL: author-date (IOP Harvard)
-  Zotero 本地API: ✅ (读取)
-  Zotero Web API: ✅ (读写, Step 3-4 必需)
+  Zotero Local API: ✅ (read)
+  Zotero Web API: ✅ (read & write, required by Step 3-4)
 ```
 
-- 缺少 `ZOTERO_API_KEY` 或 `ZOTERO_USER_ID` 时 → **提示用户手动操作**：
-  1. 与用户确认 Collection 名称（默认取 BIB 文件名去掉扩展名）
-  2. 用户在 Zotero 中创建该 Collection
-  3. 通过 Zotero「导入」功能将 BIB 文件导入该 Collection
-  4. 等待用户确认「已完成导入」后才继续 Step 2
+- If `ZOTERO_API_KEY` or `ZOTERO_USER_ID` is missing → **ask the user to do it manually**:
+  1. Confirm the Collection name with the user (default: BIB filename without extension)
+  2. Have the user create that Collection in Zotero
+  3. Have the user import the BIB into that Collection via Zotero's "Import" feature
+  4. Wait for the user to confirm "import done" before continuing to Step 2
 
-## 1c. 汇总确认
+## 1c. Summary confirmation
 
-展示以上全部信息。**必填项（md_file、bib_file）无缺项时，自动进入 Step 2**，无需等用户回复。仅有必填项缺失时才暂停询问。
+Show all of the above. **If no required field (md_file, bib_file) is missing, proceed to Step 2 automatically** — no need to wait for a user reply. Pause only when a required field is missing.

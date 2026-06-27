@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-MD ↔ BIB 交叉验证 + 三源文献真实性核查与元数据裁决
+MD ↔ BIB cross-validation + three-source reference verification & metadata arbitration
 
-三源核查（PubMed 独立策展，裁决时加权）:
-  - CrossRef  (api.crossref.org)        : DOI 锚点 / 期刊 / 卷期页 / 年份（出版商直供）
-  - PubMed   (eutils.ncbi.nlm.nih.gov) : 生物医学金标准 / 作者全名最规范（NLM 人工索引）
-  - OpenAlex (api.openalex.org)        : 覆盖最广 / 作者机构 / ORCID（免费无 key）
+Three-source verification (PubMed is independently curated, weighted in arbitration):
+  - CrossRef  (api.crossref.org)        : DOI anchor / journal / volume-issue-pages / year (publisher-direct)
+  - PubMed   (eutils.ncbi.nlm.nih.gov) : biomedical gold standard / most rigorous author full-names (NLM manual indexing)
+  - OpenAlex (api.openalex.org)        : broadest coverage / author affiliations / ORCID (free, no key)
 
-⚠️ 源并不独立：OpenAlex 大量数据继承自 CrossRef，故 "CrossRef+OpenAlex 一致" ≠ 双重
-   独立证据。PubMed 是独立策展，其单票分量 ≥ CR+OA 两票 —— 裁决不简单数人头。
+⚠️ Sources are not independent: OpenAlex inherits much of its data from CrossRef, so "CrossRef+OpenAlex agree" ≠ double
+   independent evidence. PubMed is independently curated — its single vote weighs ≥ CR+OA combined — arbitration is not simple vote-counting.
 
-裁决流程: 归一化消假冲突 → 判定同篇 → AUTO/FLAG/REJECT 三档 → 真冲突按「字段最优源」取值
+Arbitration flow: normalize to eliminate false conflicts → judge same paper → AUTO/FLAG/REJECT tiers → on real conflicts pick the value from the field's best source
 
-档位:
-  AUTO    一致 / 归一化后一致 / 多数票明确          → 自动采用 (PASS)
-  FLAG    实质冲突但有合理默认                        → 导入(用最优值) + 标记冲突
-  REJECT  根本不像同一篇 / 关键字段三源全冲突         → 不导入
-  SKIP    三源均未找到                               → 不导入（真实性未验证）
+Tiers:
+  AUTO    agree / agree after normalization / clear majority   → auto-adopt (PASS)
+  FLAG    substantive conflict but a reasonable default       → import (best value) + flag the conflict
+  REJECT  clearly not the same paper / key fields all conflict → do not import
+  SKIP    not found in any of the three sources               → do not import (authenticity unverified)
 
-用法:
+Usage:
   python3 verify_references.py <md_path> <bib_path> [--verify] [--strict] [--json OUT]
-  --verify   启用三源核查（默认只做 MD↔BIB 交叉验证）
-  --strict   FLAG 也阻塞（默认 FLAG 不阻塞：导入但标记到 Extra）
+  --verify   enable three-source verification (default: MD↔BIB cross-validation only)
+  --strict   FLAG also blocks (default: FLAG does not block — imports but tags in Extra)
 """
 
 import argparse
@@ -36,30 +36,30 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-# ── 常量 ──────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────
 PUBMED_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 OPENALEX_BASE = "https://api.openalex.org"
 CONTACT_EMAIL = os.environ.get("NCBI_EMAIL", "md2word-skill@example.com")
 
-# 冲突时各字段取值的源优先级（PubMed 对作者字段加权排前）
+# Per-field source priority on conflicts (PubMed weighted first for authors)
 SOURCE_PRIORITY = {
     "title":   ["crossref", "pubmed", "openalex"],
     "year":    ["crossref", "pubmed", "openalex"],
-    "authors": ["pubmed", "crossref", "openalex"],   # 作者优先 PubMed（NLM 策展最规范）
+    "authors": ["pubmed", "crossref", "openalex"],   # authors prefer PubMed (NLM curation is most rigorous)
     "journal": ["crossref", "pubmed", "openalex"],
     "volume":  ["crossref", "pubmed", "openalex"],
     "issue":   ["crossref", "pubmed", "openalex"],
     "pages":   ["crossref", "pubmed", "openalex"],
 }
 
-# PubMed 免费档限速 3 req/s —— 并发核查时礼貌等待
+# PubMed free tier is rate-limited to 3 req/s — be polite during concurrent verification
 PUBMED_PAUSE = 0.4
 MAX_WORKERS = 4
 
 
-# ── BibTeX / Markdown 解析（沿用原版） ────────────────────────────────
+# ── BibTeX / Markdown parsing (unchanged from original) ────────────────
 def load_bib(bib_path):
-    """解析标准 BibTeX 文件，返回 {cite_key: {doi, title, year, author}}"""
+    """Parse a standard BibTeX file; returns {cite_key: {doi, title, year, author}}"""
     import bibtexparser
     with open(bib_path, encoding="utf-8") as f:
         db = bibtexparser.load(f)
@@ -75,7 +75,7 @@ def load_bib(bib_path):
 
 
 def _ast_citation_ids(obj):
-    """递归遍历 pandoc AST，按出现顺序收集所有 Cite 节点的 citationId（含组合引用各项）。"""
+    """Recursively traverse the pandoc AST, collecting all Cite node citationIds in order (including each item in composite citations)."""
     ids = []
     if isinstance(obj, dict):
         if obj.get("t") == "Cite" and isinstance(obj.get("c"), list) and obj["c"]:
@@ -91,11 +91,11 @@ def _ast_citation_ids(obj):
 
 
 def extract_md_keys(md_path):
-    """提取 MD 中所有引用的 cite_key（含组合引用各项），按出现顺序去重。
+    """Extract every cite_key cited in the MD (including each item in composite citations), deduplicated in order of appearance.
 
-    主路径: pandoc AST（``pandoc md -t json`` → Cite.citationId）—— 结构化真相，一次性
-    免疫组合引用 / 前缀修饰(-@) / 嵌套 / 语法变体等所有正则难以覆盖的情况。
-    fallback: 正则（pandoc 不可用时）。"""
+    Main path: pandoc AST (``pandoc md -t json`` → Cite.citationId) — structured ground truth, one shot;
+    immune to composite citations / prefix decoration (-@) / nesting / syntactic variants that regex cannot cover.
+    Fallback: regex (when pandoc is unavailable)."""
     keys = []
     try:
         r = subprocess.run(["pandoc", md_path, "-t", "json"],
@@ -104,7 +104,7 @@ def extract_md_keys(md_path):
             keys = _ast_citation_ids(json.loads(r.stdout))
     except Exception:
         keys = []
-    if not keys:  # pandoc 失败 → 正则 fallback
+    if not keys:  # pandoc failed → regex fallback
         with open(md_path, encoding="utf-8") as f:
             text = f.read()
         for block in re.findall(r"\[@([^\]]+)\]", text):
@@ -121,15 +121,15 @@ def extract_md_keys(md_path):
 
 
 def cross_validate(md_path, bib_path):
-    """MD ↔ BIB 交叉验证"""
-    print(f"  解析 MD 引用: {md_path}", flush=True)
+    """MD ↔ BIB cross-validation"""
+    print(f"  Parsing MD citations: {md_path}", flush=True)
     md_keys = extract_md_keys(md_path)
-    print(f"  找到 {len(md_keys)} 个唯一引用", flush=True)
+    print(f"  Found {len(md_keys)} unique citations", flush=True)
 
-    print(f"  加载 BIB: {bib_path}", flush=True)
+    print(f"  Loading BIB: {bib_path}", flush=True)
     bib_entries = load_bib(bib_path)
     bib_keys = set(bib_entries.keys())
-    print(f"  找到 {len(bib_entries)} 个条目", flush=True)
+    print(f"  Found {len(bib_entries)} entries", flush=True)
 
     missing_in_bib = sorted(set(md_keys.keys()) - bib_keys)
     unused_in_md = sorted(bib_keys - set(md_keys.keys()))
@@ -137,7 +137,7 @@ def cross_validate(md_path, bib_path):
     no_doi = sorted(k for k in matched if not bib_entries[k].get("doi"))
     no_title = sorted(k for k in matched if not bib_entries[k].get("title"))
 
-    print(f"  ✅ 匹配 {len(matched)} | ❌ BIB缺失 {len(missing_in_bib)} | ⚠ MD未引用 {len(unused_in_md)}", flush=True)
+    print(f"  ✅ matched {len(matched)} | ❌ missing in BIB {len(missing_in_bib)} | ⚠ unused in MD {len(unused_in_md)}", flush=True)
     return {
         "md_total": len(md_keys),
         "bib_total": len(bib_entries),
@@ -150,37 +150,37 @@ def cross_validate(md_path, bib_path):
 
 
 def print_cross_report(result):
-    print("\n交叉验证报告")
+    print("\nCross-validation report")
     print("━" * 50)
-    print(f'  MD 引用数: {result["md_total"]}    BIB 条目数: {result["bib_total"]}')
-    print(f'  ✅ 匹配: {result["matched"]}')
+    print(f'  MD citations: {result["md_total"]}    BIB entries: {result["bib_total"]}')
+    print(f'  ✅ matched: {result["matched"]}')
     if result["missing_in_bib"]:
-        print(f'\n❌ MD 引用了但 BIB 缺少 ({len(result["missing_in_bib"])}):  ← 必须修复')
+        print(f'\n❌ cited in MD but missing from BIB ({len(result["missing_in_bib"])}):  ← must fix')
         for k in result["missing_in_bib"]:
             print(f"   - {k}")
     if result["unused_in_md"]:
-        print(f'\n⚠️  BIB 有但 MD 未引用 ({len(result["unused_in_md"])}):  ← 可选清理')
+        print(f'\n⚠️  in BIB but not cited in MD ({len(result["unused_in_md"])}):  ← optional cleanup')
         for k in result["unused_in_md"][:10]:
             print(f"   - {k}")
         if len(result["unused_in_md"]) > 10:
-            print(f"   ... 等 {len(result['unused_in_md'])} 条")
+            print(f"   ... and {len(result['unused_in_md'])} more")
     if result["no_doi"]:
-        print(f'\nℹ️  无 DOI 走标题反查 ({len(result["no_doi"])}/{result["matched"]}):  ← 三源 title 查询')
+        print(f'\nℹ️  no DOI, reverse-lookup by title ({len(result["no_doi"])}/{result["matched"]}):  ← three-source title query')
     if result["no_title"]:
-        print(f'\n❌ 无 title 无法反查 ({len(result["no_title"])}):  ← 必须修复')
+        print(f'\n❌ no title, cannot reverse-lookup ({len(result["no_title"])}):  ← must fix')
         for k in result["no_title"]:
             print(f"   - {k}")
     print("━" * 50)
 
 
-# ── 归一化（消假冲突） ────────────────────────────────────────────────
+# ── Normalization (eliminate false conflicts) ─────────────────────────
 def normalize(text):
-    """去标点+小写，用于标题比较"""
+    """Strip punctuation + lowercase, for title comparison"""
     return re.sub(r"[^\w]", "", text or "").lower()
 
 
 def norm_lastname(name):
-    """作者姓氏归一化: 去变音符/连字符/句点/空格 + 小写。Fogliatà ≡ Fogliata ≡ FOGLIATA"""
+    """Author surname normalization: strip diacritics / hyphens / periods / spaces + lowercase. Fogliatà ≡ Fogliata ≡ FOGLIATA"""
     if not name:
         return ""
     n = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
@@ -193,7 +193,7 @@ def norm_year(y):
 
 
 def _title_similar(a, b):
-    """标题词级 Jaccard 相似度 ≥ 0.8 视为同一篇"""
+    """Title word-level Jaccard similarity ≥ 0.8 → considered the same paper"""
     if not a or not b:
         return False
     if a == b:
@@ -204,9 +204,9 @@ def _title_similar(a, b):
     return len(ta & tb) / len(ta | tb) >= 0.8
 
 
-# ── 三源查询 ──────────────────────────────────────────────────────────
+# ── Three-source queries ────────────────────────────────────────────────
 def query_crossref(doi=None, title=None):
-    """查询 CrossRef，返回标准化权威元数据 dict 或 None"""
+    """Query CrossRef; returns standardized authoritative-metadata dict or None"""
     try:
         if doi:
             r = subprocess.run(
@@ -248,12 +248,12 @@ def _parse_crossref(msg):
 
 
 def query_pubmed(doi=None, title=None):
-    """查询 PubMed。DOI 用 idconv 精确查（避免 esearch [AID] 把无效 DOI 当文本模糊
-    误匹配到无关论文）；title 用 esearch [TI]。esummary 拿元数据。"""
+    """Query PubMed. DOI uses idconv for an exact lookup (avoids esearch [AID] treating an invalid DOI
+    as fuzzy text and mismatching unrelated papers); title uses esearch [TI]. esummary fetches metadata."""
     try:
         pmid = None
         if doi:
-            # idconv 精确: DOI → PMID。找不到返回 None（不模糊匹配）
+            # idconv exact: DOI → PMID. Returns None if not found (no fuzzy matching)
             url = (f"https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?ids={urllib.parse.quote(doi)}"
                    f"&format=json&tool=md2word&email={CONTACT_EMAIL}")
             r = subprocess.run(["curl", "-s", url], capture_output=True, text=True, timeout=15)
@@ -271,7 +271,7 @@ def query_pubmed(doi=None, title=None):
                     pmid = idlist[0]
         if not pmid:
             return None
-        time.sleep(PUBMED_PAUSE)  # 免费 3 req/s 礼貌限速
+        time.sleep(PUBMED_PAUSE)  # polite rate-limiting for the free 3 req/s tier
         esummary = (f"{PUBMED_BASE}/esummary.fcgi?db=pubmed&id={pmid}&retmode=json"
                     f"&tool=md2word&email={CONTACT_EMAIL}")
         r = subprocess.run(["curl", "-s", esummary], capture_output=True, text=True, timeout=15)
@@ -288,11 +288,11 @@ def query_pubmed(doi=None, title=None):
 def _parse_pubmed(rec):
     authors = []
     for a in rec.get("authors", []):
-        # esummary author 只有小写 "name"（如 "Fogliata A" = LastName + Initials）
+        # esummary author only has a lowercase "name" (e.g. "Fogliata A" = LastName + Initials)
         name = a.get("name") or a.get("LastName", "") or ""
         parts = name.split()
         if len(parts) >= 2:
-            last, given = parts[0], " ".join(parts[1:])   # PubMed: 姓在前，名缩写在后
+            last, given = parts[0], " ".join(parts[1:])   # PubMed: surname first, initials after
         elif parts:
             last, given = parts[0], ""
         else:
@@ -318,7 +318,7 @@ def _parse_pubmed(rec):
 
 
 def query_openalex(doi=None, title=None):
-    """查询 OpenAlex。by-DOI 直查；by-title search。"""
+    """Query OpenAlex. by-DOI direct lookup; by-title search."""
     try:
         if doi:
             url = f"{OPENALEX_BASE}/works/doi:{doi}?mailto={CONTACT_EMAIL}"
@@ -346,12 +346,12 @@ def _parse_openalex(work):
         a = au.get("author", {}) or {}
         raw = au.get("raw_author_name") or a.get("display_name", "")
         if "," in raw:
-            # "Last, Given" 格式（OpenAlex raw_author_name 常见）
+            # "Last, Given" format (common in OpenAlex raw_author_name)
             parts = [p.strip() for p in raw.split(",", 1)]
             last = parts[0]
             given = parts[1] if len(parts) > 1 else ""
         else:
-            # "Given Last" 格式（display_name 常见）
+            # "Given Last" format (common in display_name)
             p = raw.rsplit(" ", 1)
             given, last = (p[0], p[1]) if len(p) == 2 else ("", raw)
         authors.append({
@@ -376,9 +376,9 @@ def _parse_openalex(work):
     }
 
 
-# ── 裁决 ──────────────────────────────────────────────────────────────
+# ── Arbitration ────────────────────────────────────────────────────────
 def is_same_paper(records):
-    """records: {source: meta or None}。判定查到的几条是否同一篇。"""
+    """records: {source: meta or None}. Judge whether the fetched records are the same paper."""
     got = {s: r for s, r in records.items() if r}
     if not got:
         return False
@@ -390,7 +390,7 @@ def is_same_paper(records):
     years = [norm_year(r.get("year")) for r in got.values() if norm_year(r.get("year"))]
     if len(years) >= 2:
         yint = [int(y) for y in years]
-        if max(yint) - min(yint) > 1:  # ±1 容忍 epub/print 差异
+        if max(yint) - min(yint) > 1:  # ±1 tolerance for epub/print differences
             return False
     return True
 
@@ -398,9 +398,9 @@ def is_same_paper(records):
 def reconcile(records):
     """
     records: {source: meta or None}
-    返回 (authoritative, conflicts):
-      authoritative: 裁决后字段（每字段从最优源取，格式同 meta dict）
-      conflicts: [{field, values:{source: 展示值}, chosen_source}, ...]
+    Returns (authoritative, conflicts):
+      authoritative: adjudicated fields (each field taken from its best source; format matches meta dict)
+      conflicts: [{field, values:{source: display value}, chosen_source}, ...]
     """
     got = {s: r for s, r in records.items() if r}
     authoritative, conflicts = {}, []
@@ -408,7 +408,7 @@ def reconcile(records):
         return authoritative, conflicts
 
     for field in ["title", "year", "authors", "journal", "volume", "issue", "pages", "doi"]:
-        # ── journal 特判：issn 一致 或 去括号文本一致 → 视为同一期刊（不冲突）──
+        # ── journal special-case: issn match OR bracket-stripped text match → same journal (no conflict) ──
         if field == "journal":
             issns = {(r.get("issn") or "").lower().replace("-", "")
                      for r in got.values() if (r.get("issn") or "").lower().replace("-", "")}
@@ -425,7 +425,7 @@ def reconcile(records):
                                   "chosen_source": chosen_src})
             continue
 
-        # ── 通用字段：归一化比较 ──
+        # ── generic fields: normalized comparison ──
         vals = {}  # source -> (raw, norm)
         for s, r in got.items():
             raw = r.get(field)
@@ -436,7 +436,7 @@ def reconcile(records):
             elif field in ("volume", "issue"):
                 norm = re.sub(r"\D", "", str(raw or ""))
             elif field == "pages":
-                # 页码只比起始页（PubMed 常缩写 "2253-65" = "2253-2265"）
+                # Pages: compare only the start page (PubMed often abbreviates "2253-65" = "2253-2265")
                 norm = re.split(r"[-–]", str(raw or ""))[0].strip()
             else:
                 norm = normalize(raw)
@@ -459,7 +459,7 @@ def reconcile(records):
                               if field == "authors" else v[0])
             conflicts.append({"field": field, "values": display, "chosen_source": chosen_src})
 
-    # OpenAlex 独有的 ORCID 并入（不算冲突）
+    # Merge OpenAlex-only ORCID (not counted as a conflict)
     oa = got.get("openalex")
     if oa:
         orcids = {norm_lastname(a.get("family", "")): a.get("orcid")
@@ -470,7 +470,7 @@ def reconcile(records):
 
 
 def verify_one(entry):
-    """核查单条文献（三源串行查，由 multi_verify 并发调度）。
+    """Verify a single reference (three sources queried serially; scheduled concurrently by multi_verify).
     entry: {cite_key, doi, title, ...} → (cite_key, result)"""
     cite_key = entry["cite_key"]
     doi = entry.get("doi")
@@ -482,8 +482,8 @@ def verify_one(entry):
         "openalex": query_openalex(doi=doi, title=title),
     }
 
-    # 关键防护：每个源的 title 必须与 bib title 相似，否则该源匹配错了 —— 防止单源
-    # 错误数据因"无其他源可比"而误 PASS（如 PubMed 把无效 DOI 模糊匹配到无关论文）。
+    # Key safeguard: each source's title must be similar to the BIB title, otherwise that source mismatched — prevents
+    # a single source's erroneous data from spuriously PASSing due to "no other source to compare" (e.g. PubMed fuzzy-matching an invalid DOI to an unrelated paper).
     bib_t = normalize(title)
     if bib_t:
         for s in list(records):
@@ -491,18 +491,18 @@ def verify_one(entry):
             if r:
                 src_t = normalize(r.get("title", ""))
                 if src_t and not _title_similar(src_t, bib_t):
-                    records[s] = None  # 剔除 title 与 bib 不符的源
+                    records[s] = None  # drop sources whose title doesn't match the BIB
 
     found = [s for s, r in records.items() if r]
 
     if not found:
         return cite_key, {"status": "SKIP", "authoritative": {}, "conflicts": [],
-                          "sources_found": [], "issues": ["三源均未找到或 title 与 bib 不符（DOI 可能无效）"]}
+                          "sources_found": [], "issues": ["Not found in any of the three sources, or title doesn't match the BIB (DOI may be invalid)"]}
 
     if not is_same_paper(records):
         return cite_key, {"status": "REJECT", "authoritative": {}, "conflicts": [],
                           "sources_found": found,
-                          "issues": ["源之间不像同一篇文献（title/作者/年份不匹配）"]}
+                          "issues": ["Sources don't look like the same paper (title/author/year mismatch)"]}
 
     authoritative, conflicts = reconcile(records)
     status = "FLAG" if conflicts else "PASS"
@@ -511,10 +511,10 @@ def verify_one(entry):
 
 
 def multi_verify(verify_entries):
-    """三源并发核查。verify_entries: {cite_key: {doi,title,...}}"""
+    """Three-source concurrent verification. verify_entries: {cite_key: {doi,title,...}}"""
     items = list(verify_entries.items())
     total = len(items)
-    print(f"  三源核查 {total} 条 (CrossRef + PubMed + OpenAlex, 并发) ...", flush=True)
+    print(f"  Three-source verification of {total} entries (CrossRef + PubMed + OpenAlex, concurrent) ...", flush=True)
     results, done = {}, 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {pool.submit(verify_one, {**v, "cite_key": k}): k for k, v in items}
@@ -525,8 +525,8 @@ def multi_verify(verify_entries):
                 results[k] = res
                 done += 1
                 print(f'  [{done}/{total}] {k}: {res["status"]} '
-                      f'(源={",".join(res["sources_found"]) or "无"} '
-                      f'冲突={len(res["conflicts"])})', flush=True)
+                      f'(sources={",".join(res["sources_found"]) or "none"} '
+                      f'conflicts={len(res["conflicts"])})', flush=True)
             except Exception as e:
                 done += 1
                 results[ck] = {"status": "SKIP", "authoritative": {}, "conflicts": [],
@@ -538,9 +538,9 @@ def multi_verify(verify_entries):
 def print_verify_report(results, strict=False):
     from collections import Counter
     counts = Counter(r["status"] for r in results.values())
-    print("\n三源文献核查报告")
+    print("\nThree-source reference verification report")
     print("━" * 60)
-    print(f"  核查 {len(results)} 条 | " + " | ".join(
+    print(f"  Verified {len(results)} entries | " + " | ".join(
         f"{s}: {counts.get(s, 0)}" for s in ["PASS", "FLAG", "REJECT", "SKIP"]))
 
     rejects = [(k, v) for k, v in results.items() if v["status"] == "REJECT"]
@@ -548,18 +548,18 @@ def print_verify_report(results, strict=False):
     skips = [(k, v) for k, v in results.items() if v["status"] == "SKIP"]
 
     if rejects:
-        print(f"\n❌ REJECT ({len(rejects)}): 不导入")
+        print(f"\n❌ REJECT ({len(rejects)}): not imported")
         for k, v in rejects:
             print(f'   - {k}: {"; ".join(v["issues"])}')
     if flags:
-        tag = "阻塞（--strict）" if strict else "导入但标记到 Extra"
+        tag = "blocked (--strict)" if strict else "imported but tagged in Extra"
         print(f"\n⚠️  FLAG ({len(flags)}): {tag}")
         for k, v in flags:
             for c in v["conflicts"]:
                 vals = " | ".join(f"{s}={x}" for s, x in c["values"].items())
-                print(f'   - {k}.{c["field"]}: {vals}  → 取 {c["chosen_source"]}')
+                print(f'   - {k}.{c["field"]}: {vals}  → using {c["chosen_source"]}')
     if skips:
-        print(f"\n⏭  SKIP ({len(skips)}): 三源未找到")
+        print(f"\n⏭  SKIP ({len(skips)}): not found in any source")
         for k, v in skips:
             print(f"   - {k}")
     print("━" * 60)
@@ -568,33 +568,33 @@ def print_verify_report(results, strict=False):
 # ── Main ──────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
-        description="MD↔BIB 交叉验证 + 三源(CrossRef/PubMed/OpenAlex)核查与元数据裁决")
-    parser.add_argument("md_path", help="Markdown 文件路径")
-    parser.add_argument("bib_path", help="BibTeX 文件路径")
-    parser.add_argument("--verify", action="store_true", help="启用三源核查（默认只交叉验证）")
+        description="MD↔BIB cross-validation + three-source (CrossRef/PubMed/OpenAlex) verification & metadata arbitration")
+    parser.add_argument("md_path", help="Path to the Markdown file")
+    parser.add_argument("bib_path", help="Path to the BibTeX file")
+    parser.add_argument("--verify", action="store_true", help="Enable three-source verification (default: cross-validation only)")
     parser.add_argument("--strict", action="store_true",
-                        help="FLAG 也阻塞（默认 FLAG 不阻塞：导入但标记到 Extra）")
-    parser.add_argument("--json", help="输出结果 JSON（含裁决后的权威元数据）")
+                        help="FLAG also blocks (default: FLAG does not block — imports but tags in Extra)")
+    parser.add_argument("--json", help="Output results JSON (includes adjudicated authoritative metadata)")
     args = parser.parse_args()
 
-    # Step 2b: 交叉验证
-    print("Step 2b: MD ↔ BIB 交叉验证")
+    # Step 2b: cross-validation
+    print("Step 2b: MD ↔ BIB cross-validation")
     cv_result = cross_validate(args.md_path, args.bib_path)
     print_cross_report(cv_result)
 
     fatal = cv_result["missing_in_bib"] + cv_result["no_title"]
     if fatal:
-        print("\n⛔ 存在致命问题，请修复后重新运行。")
+        print("\n⛔ Fatal issues found — please fix and re-run.")
         if args.json:
             with open(args.json, "w") as f:
                 json.dump({"cross_validate": cv_result}, f, ensure_ascii=False, indent=2)
         return 1
 
-    # Step 2c: 三源核查（可选）
+    # Step 2c: three-source verification (optional)
     v_results = None
     blocked = False
     if args.verify:
-        print("\nStep 2c: 三源核查 (CrossRef + PubMed + OpenAlex)")
+        print("\nStep 2c: three-source verification (CrossRef + PubMed + OpenAlex)")
         bib_entries = load_bib(args.bib_path)
         md_keys = extract_md_keys(args.md_path)
         entries = {k: v for k, v in bib_entries.items() if k in md_keys}
@@ -602,16 +602,16 @@ def main():
         print_verify_report(v_results, strict=args.strict)
         if args.strict and any(r["status"] in ("FLAG", "REJECT") for r in v_results.values()):
             blocked = True
-            print("\n⛔ --strict 模式: 存在 FLAG/REJECT，已阻塞。去掉 --strict 可导入（FLAG 会标记到 Extra）。")
+            print("\n⛔ --strict mode: FLAG/REJECT present, blocked. Remove --strict to import (FLAG will be tagged in Extra).")
 
-    # 输出 JSON（含权威元数据，供 import_zotero.py 使用）
+    # Output JSON (includes authoritative metadata, consumed by import_zotero.py)
     if args.json:
         output = {"cross_validate": cv_result}
         if v_results:
             output["multi_verify"] = v_results
         with open(args.json, "w") as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
-        print(f"\n结果（含权威元数据）已保存到 {args.json}")
+        print(f"\nResults (with authoritative metadata) saved to {args.json}")
 
     return 1 if blocked else 0
 
