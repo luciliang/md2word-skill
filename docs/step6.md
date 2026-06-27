@@ -1,28 +1,28 @@
-# Step 6: 注入 Zotero field codes
+# Step 6: Inject Zotero field codes
 
-根据 Step 5 检测的 citation-format 选注入策略：
+Choose the injection strategy based on the citation-format detected in Step 5:
 
-**author-date 模式**（PMB / IOP Harvard）：
-- pandoc 用 `w:hyperlink` 包裹引用，anchor 为 `ref-{cite_key}`
-- 脚本自动从 anchor 读取 cite_key，无需文本匹配
+**author-date mode** (PMB / IOP Harvard):
+- pandoc wraps citations in `w:hyperlink` with anchor `ref-{cite_key}`
+- the script reads cite_key directly from the anchor — no text matching needed
 
-**numeric 模式**：
-- pandoc 输出 `[1]` 或上标
-- 用编号直接匹配 mapping
+**numeric mode**:
+- pandoc outputs `[1]` or superscripts
+- match the mapping directly by number
 
-执行注入：
+Run the injection:
 ```bash
 python3 scripts/inject_zotero.py --input OUTDIR/pandoc_output.docx --output OUTDIR/FINAL_zotero.docx \
   --mapping OUTDIR/citation_mapping.json --csl CSL_PATH --user-id USER_ID
 ```
 
-脚本同时：删除静态 References 节，插入 `ADDIN ZOTERO_BIBLIOGRAPH` 占位符。
+The script also: deletes the static References section and inserts an `ADDIN ZOTERO_BIBLIOGRAPH` placeholder.
 
-**验证**：
+**Verification**:
 ```bash
 python3 -c "import zipfile,re; z=zipfile.ZipFile('OUTPUT.docx'); c=z.open('word/document.xml').read().decode();
   print(f'✓ {len(re.findall(r\"ZOTERO_ITEM CSL_CITATION\", c))} citations');
   print(f'✓ {len(re.findall(r\"ZOTERO_BIBLIOGRAPH\", c))} bibliography')"
 ```
 
-**检查点**：展示替换统计，确认数量合理。
+**Checkpoint**: show the replacement statistics and confirm the counts look reasonable.

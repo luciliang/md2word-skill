@@ -1,12 +1,13 @@
-# Step 3: 创建 Zotero Collection + 导入权威元数据
+# Step 3: Create Zotero Collection + import authoritative metadata
 
-用 `scripts/import_zotero.py` 把 Step 2c 三源裁决后的**权威元数据**（而非 BIB 原值）导入 Zotero。
+Use `scripts/import_zotero.py` to import the **authoritative metadata** (not the BIB values) adjudicated by Step 2c into Zotero.
 
-## 前置
-- Step 2c 已产出 `verify_result.json`（含每条的 `authoritative` 元数据）
-- `ZOTERO_API_KEY` + `ZOTERO_USER_ID` 已配 —— **local API 不支持写**（实测），导入/写入必须走 Web API
+## Prerequisites
 
-## 3a. 导入
+- Step 2c produced `verify_result.json` (with `authoritative` metadata per entry)
+- `ZOTERO_API_KEY` + `ZOTERO_USER_ID` configured — **the Local API does not support writes** (confirmed in practice); imports/writes must use the Web API
+
+## 3a. Import
 
 ```bash
 python3 scripts/import_zotero.py \
@@ -15,24 +16,24 @@ python3 scripts/import_zotero.py \
   --bib BIB_FILE
 ```
 
-可选：`--dry-run`（只报告不写入）、`--import-skip`（SKIP 条目也用 BIB 原值导入并标记「未验证」）。
+Optional: `--dry-run` (report only, no writes), `--import-skip` (also import SKIP entries using BIB values, tagged "unverified").
 
-**脚本逻辑**：
-- **PASS** → 用权威元数据 `create_items` 新建 item
-- **FLAG** → 用权威元数据新建 + 冲突记录写入 `Extra` 字段（`--strict` 时这些已在 Step 2c 阻塞）
-- **REJECT / SKIP** → 不导入（真实性存疑，不污染库）；`--import-skip` 可强制用 BIB 原值导入
-- collection 内已有**同 DOI** item → `update_item` 修正（含作者名）；否则 `create_items`
+**Script logic**:
+- **PASS** → create a new item with authoritative metadata via `create_items`
+- **FLAG** → create with authoritative metadata + write the conflict record into the `Extra` field (under `--strict` these already blocked in Step 2c)
+- **REJECT / SKIP** → not imported (authenticity doubtful; avoid polluting the library); `--import-skip` forces an import using the BIB value
+- An item with the **same DOI** already in the collection → `update_item` to correct (including author names); otherwise `create_items`
 
-## 3b. 核心价值：修正 BIB 错误
+## 3b. Core value: fixing BIB errors
 
-即使 BIB 里作者名写错（如 `Fogliato`），三源裁决给的是权威值（`Fogliata`），导入即为正确值。这是本步骤相对「直接导入 BIB」的根本优势 —— **BIB 的错误被权威数据覆盖**。同理修正年份、期刊、卷期页。
+Even if an author's name is misspelled in the BIB (e.g. `Fogliato`), three-source arbitration yields the authoritative value (`Fogliata`), so the import is correct from the start. This is the fundamental advantage over "importing the BIB directly" — **BIB errors are overwritten by authoritative data**. The same applies to year, journal, volume-issue-pages.
 
-> ⚠️ 不要用「只填 DOI，Zotero 自动补全」的旧思路：pyzotero（无论 local 还是 Web API）创建只含 DOI 的 item **不会触发** Zotero 客户端的自动补全（实测得到的是残缺条目）。必须用 verify 的权威数据构造完整 payload。
+> ⚠️ Do not use "fill only the DOI and let Zotero auto-complete": pyzotero (Local or Web API) creating an item with only a DOI **does not trigger** the Zotero client's auto-completion (in practice it yields an incomplete entry). You must build the full payload from verify's authoritative data.
 
-## 3c. 等待同步 & 校验
+## 3c. Wait for sync & verify
 
-`sleep 5`，确认 collection 中条目数。**再次运行** `import_zotero.py` 应全部为 `↻ 更新`（同 DOI 不重复创建）—— 这是去重正确性的验证。
+`sleep 5`, then confirm the number of entries in the collection. **Re-run** `import_zotero.py` — everything should report `↻ update` (no duplicate creation for the same DOI) — this validates deduplication correctness.
 
-**检查点**：展示导入报告（新建 / 更新 / FLAG / 跳过），等用户确认。
+**Checkpoint**: show the import report (created / updated / FLAG / skipped) and wait for the user to confirm.
 
-> REJECT/SKIP 不导入——真实性存疑的文献不应污染 Zotero 库。FLAG 已导入（用最优值），但 Extra 字段有冲突记录，投稿前应逐条过目。
+> REJECT/SKIP are not imported — references whose authenticity is doubtful should not pollute the Zotero library. FLAG has been imported (with the best value), but its `Extra` field carries a conflict record you should review one by one before submission.

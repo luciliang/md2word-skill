@@ -296,24 +296,27 @@ def match_author_year_text(text, bib_lookup):
 
 
 def inject_author_year(body, citation_map, user_id, bib_path=None):
-    """替换 author-year 引用为 Zotero field。
+    """Replace author-year citations with Zotero field codes.
 
-    优先用 pandoc ``-M link-citations=true`` 产生的 <w:hyperlink w:anchor="ref-{cite_key}">
-    （anchor 直接含 cite_key，**精确，同年同作者无歧义**）。若无 hyperlink（pandoc 未开
-    link-citations），fallback 到文本匹配（用 bib author/year 反查，同年同作者不精确）。"""
+    Prefers the <w:hyperlink w:anchor="ref-{cite_key}"> produced by pandoc's
+    ``-M link-citations=true`` (the anchor embeds the cite_key directly — **precise,
+    no ambiguity for same-author-same-year works). If no hyperlink is present (pandoc
+    run without link-citations), falls back to text matching (reverse lookup via bib
+    author/year — imprecise for same-author-same-year)."""
     has_anchor = any((hl.get(qn('w:anchor'), '') or '').startswith('ref-')
                      for hl in body.iter(qn('w:hyperlink')))
     if has_anchor:
-        print("  模式: hyperlink anchor (pandoc link-citations:true → 精确)")
+        print("  Mode: hyperlink anchor (pandoc link-citations:true → precise)")
         return _inject_author_year_anchor(body, citation_map, user_id)
-    print("  模式: 文本匹配 fallback（建议 pandoc 加 -M link-citations=true 以精确区分同年同作者）")
+    print("  Mode: text-match fallback (recommend adding -M link-citations=true to pandoc for precise same-author-same-year disambiguation)")
     return _inject_author_year_text(body, citation_map, user_id, bib_path)
 
 
 def _inject_author_year_anchor(body, citation_map, user_id):
-    """anchor 模式：pandoc link-citations 把引用包在 <w:hyperlink w:anchor="ref-{cite_key}">。
-    从 anchor 直接读 cite_key（精确），合并 ( ) 内相邻 hyperlink 为一个 field。
-    用 consumed set 标记已替换元素，避免替换后 DOM 索引错乱漏掉后续引用。"""
+    """Anchor mode: pandoc link-citations wraps citations in <w:hyperlink w:anchor="ref-{cite_key}">.
+    Reads cite_key directly from the anchor (precise), merging adjacent hyperlinks inside
+    ( ) into a single field. Uses a consumed set to mark already-replaced elements so
+    DOM indices don't shift and miss subsequent citations."""
     total, warnings = 0, []
     for p_elem in body.iter(qn('w:p')):
         children = list(p_elem)
@@ -339,7 +342,7 @@ def _inject_author_year_anchor(body, citation_map, user_id):
                     if t is not None and t.text and ')' in t.text:
                         closing_run = c; break
                     elif t is not None and t.text and t.text.strip() in ('', ',', ';'):
-                        elems.append(c); j += 1  # pandoc 把 ", " 拆成 "," + " " 两个 run，空格 strip 为 ''
+                        elems.append(c); j += 1  # pandoc splits ", " into "," + " " as two runs; the space strips to ''
                     else:
                         break
                 else:
@@ -374,10 +377,11 @@ def _inject_author_year_anchor(body, citation_map, user_id):
 
 
 def _inject_author_year_text(body, citation_map, user_id, bib_path=None):
-    """文本匹配 fallback：pandoc 默认纯文本 (Author Year)，无 hyperlink。合并跨 run 引用
-    文本，用 bib author/year 反查 cite_key。同年同作者不精确（会全匹配上）。"""
+    """Text-match fallback: pandoc's default plain-text output (Author Year), no hyperlinks.
+    Merges citation text across runs, then reverse-looks-up cite_key via bib author/year.
+    Imprecise for same-author-same-year (all such works match)."""
     if not bib_path:
-        print("⚠ 文本匹配需要 --bib")
+        print("⚠ text matching requires --bib")
         return 0, ["missing --bib"]
     bib_lookup = load_bib_lookup(bib_path)
     total, warnings = 0, []
@@ -528,7 +532,7 @@ def inject_zotero_fields(input_path, output_path, mapping_path, user_id,
         cite_format = detect_csl_format(csl_path)
         print(f"CSL format: {cite_format} (from {os.path.basename(csl_path)})")
 
-    # Load mapping（兼容新旧格式：新 {ck:{zotero_key,confidence,...}} / 旧 {ck:key}）
+    # Load mapping (compatible with both formats: new {ck:{zotero_key,confidence,...}} / legacy {ck:key})
     with open(mapping_path) as f:
         raw = json.load(f)
     citation_map, low_conf = {}, []

@@ -1,48 +1,48 @@
-# Step 2: 依赖检查 + 验证
+# Step 2: Dependency check + verification
 
-## 2a. 检查依赖
+## 2a. Check dependencies
 
 ```bash
-# 读取用 local API；写入（Step 3）必须用 Web API
+# Local API for reads; Step 3 writes must use the Web API
 python3 -c "from pyzotero import zotero; zot = zotero.Zotero(0, 'user', local=True); print(len(zot.collections()), 'collections')"
 pandoc --version | head -1
 ```
 
-Zotero 未运行则提示启动后重试。
+If Zotero is not running, prompt the user to start it and retry.
 
-## 2b + 2c. 交叉验证 + 三源核查与元数据裁决
+## 2b + 2c. Cross-validation + three-source verification & metadata arbitration
 
-统一调用 `scripts/verify_references.py`：
+Call `scripts/verify_references.py`:
 
 ```bash
-# 仅交叉验证（快速，默认）
+# cross-validation only (fast, default)
 python3 scripts/verify_references.py MD_FILE BIB_FILE
 
-# 交叉验证 + 三源核查（完整路径）
+# cross-validation + three-source verification (full path)
 python3 scripts/verify_references.py MD_FILE BIB_FILE --verify
 
-# FLAG 也阻塞（投稿前终审）
+# FLAG also blocks (pre-submission final review)
 python3 scripts/verify_references.py MD_FILE BIB_FILE --verify --strict
 
-# 输出 JSON（含权威元数据）供 Step 3 导入
+# output JSON (with authoritative metadata) for Step 3 import
 python3 scripts/verify_references.py MD_FILE BIB_FILE --verify --json OUTDIR/verify_result.json
 ```
 
-**三源**（均免费，无需 key）：
-- **CrossRef** — DOI 锚点 / 期刊 / 卷期页 / 年份（出版商直供）
-- **PubMed**（NCBI E-utilities）— 生物医学金标准 / 作者全名最规范（NLM 独立策展）
-- **OpenAlex** — 覆盖最广 / 作者机构 / ORCID
+**Three sources** (all free, no key):
+- **CrossRef** — DOI anchor / journal / volume-issue-pages / year (publisher-direct)
+- **PubMed** (NCBI E-utilities) — biomedical gold standard / most rigorous author full-names (NLM independent curation)
+- **OpenAlex** — broadest coverage / author affiliations / ORCID
 
-**裁决流程**：归一化消假冲突 → 判定同篇 → 三档处置
-- ✅ **PASS**：三源一致（或归一化后一致）
-- ⚠️ **FLAG**：实质冲突但有合理默认 → 默认**不阻塞**（导入但标记到 Extra）；`--strict` 时阻塞
-- ❌ **REJECT**：不像同一篇文献（title/作者/年份不匹配）→ 不导入
-- ⏭ **SKIP**：三源均未找到 → 不导入
+**Arbitration flow**: normalize to eliminate false conflicts → judge whether it's the same paper → four-tier disposition
+- ✅ **PASS**: three sources agree (or agree after normalization)
+- ⚠️ **FLAG**: substantive conflict but a reasonable default → **non-blocking** by default (import but tag in Extra); blocks under `--strict`
+- ❌ **REJECT**: doesn't look like the same paper (title/author/year mismatch) → not imported
+- ⏭ **SKIP**: not found in any source → not imported
 
-**字段最优源**（真冲突时取谁）：作者优先 **PubMed**（独立策展，单票分量 ≥ CrossRef+OpenAlex）；期刊/卷期页/年份优先 **CrossRef**。
+**Field best-source** (who wins on real conflicts): authors prefer **PubMed** (independently curated, a single vote carries weight ≥ CrossRef + OpenAlex); journal/volume-issue-pages/year prefer **CrossRef**.
 
-> ⚠️ 源并不独立：OpenAlex 大量数据继承自 CrossRef，故不简单数人头，PubMed 的独立一票分量更高。
+> ⚠️ Sources are not independent: OpenAlex inherits much of its data from CrossRef, so votes are not simply counted; PubMed's independent vote carries more weight.
 
-**检查点**：脚本输出报告（PASS/FLAG/REJECT/SKIP 计数 + FLAG 的逐字段冲突详情）。`--strict` 下 FLAG/REJECT 阻塞。
+**Checkpoint**: the script prints a report (PASS/FLAG/REJECT/SKIP counts + per-field conflict details for FLAG). Under `--strict`, FLAG/REJECT block.
 
-> `verify_result.json` 含每条的 `authoritative` 权威元数据，供 Step 3 的 `import_zotero.py` 使用——这是「不信任 bib、用权威数据」修正错误的关键。
+> `verify_result.json` carries the `authoritative` metadata for every entry, consumed by `import_zotero.py` in Step 3 — this is the key to "don't trust the BIB, use authoritative data" for fixing errors.
